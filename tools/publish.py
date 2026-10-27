@@ -12,6 +12,7 @@ WebView2Loader.dll，单独拿 exe 到别的目录会直接报
 
 用法：python tools/publish.py
 """
+import json
 import shutil
 import zipfile
 from pathlib import Path
@@ -19,7 +20,17 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 RELEASE = ROOT / "src-tauri" / "target" / "release"
 OUT = ROOT / "发布"
-NAME = "Jane Music 4.0"
+
+
+def version() -> str:
+    """版本号只认 tauri.conf.json 一处，别在这里硬编码——
+    以前写死成 "Jane Music 4.0"，结果发了 4.0.1/4.0.2 文件名还是 4.0。"""
+    conf = ROOT / "src-tauri" / "tauri.conf.json"
+    return json.loads(conf.read_text(encoding="utf-8"))["version"]
+
+
+VER = version()
+NAME = f"Jane Music {VER}"
 
 SRC_EXE = RELEASE / "jane-music.exe"
 SRC_DLL = RELEASE / "WebView2Loader.dll"
@@ -49,14 +60,15 @@ def copy_replace(src: Path, dst: Path) -> None:
     except OSError:
         pass
 
-README = """Jane Music 4.0
+README = f"""Jane Music {VER}
 
-【本版更新】界面整体重写（Vue）后又做了一轮打磨：大窗加宽到 860、封面换成旋转黑胶、
-歌词字号可调、榜单切换统一收到右上角、全套提示文案重写。详见同目录「更新说明.md」。
+【本版更新】一键更新：标题栏的 NEW（或设置里的 NEW vX →）点下去，程序自己下载新版、
+校验、替换旧 exe 然后自动重启，全程不开浏览器；下载失败才让你手动去下载页拿。
+详见同目录「更新说明.md」。
 
 【怎么用】
 1. 把整个文件夹解压出来，别只拿 exe —— 旁边的 WebView2Loader.dll 必须和它待在同一个文件夹里。
-2. 双击「Jane Music 4.0.exe」。默认是大窗（左封面右歌词），点标题栏右上角第一个圆图标切小窗。
+2. 双击「{NAME}.exe」。默认是大窗（左封面右歌词），点标题栏右上角第一个圆图标切小窗。
 3. 点播放会先续上上次听的那首（秒开），点下一首随机抽歌，播完自动连播。
 
 【三种形态】

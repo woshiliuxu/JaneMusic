@@ -909,6 +909,71 @@ fn drag_window(app: AppHandle) {
     }
 }
 
+/// 一键更新：把新 exe 下到程序同目录 → 校验 PE 头 → 运行中的旧 exe 改名让位 → 换上新包
+/// → 2 秒后由 cmd 拉起新实例（等本进程退出，避免被单实例守卫转给旧进程）→ 本进程退出。
+/// 任何一步失败都返回 Err，前端回退成「打开下载页手动下」。
+#[tauri::command]
+fn update_app(app: AppHandle, url: String) -> Result<(), String> {
+    use std::io::Read;
+
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    let dir = exe.parent().ok_or("程序路径异常")?.to_path_buf();
+    let tmp = dir.join("jane_update.tmp");
+
+    let client = reqwest::blocking::Client::builder()
+        .user_agent(CLIENT)
+        .connect_timeout(std::time::Duration::from_secs(8))
+        .timeout(None) // 十几 MB 的包，别用固定超时卡死
+        .build()
+        .map_err(|e| e.to_string())?;
+    let mut resp = client.get(&url).send().map_err(|e| e.to_string())?;
+    if !resp.status().is_success() {
+        return Err(format!("下载失败 HTTP {}", resp.status()));
+    }
+    let mut f = std::fs::File::create(&tmp).map_err(|e| e.to_string())?;
+    std::io::copy(&mut resp, &mut f).map_err(|e| e.to_string())?;
+    drop(f);
+
+    // 校验确实是 Windows 可执行文件（MZ 头）：代理/网络出错时可能下到 HTML 错误页
+    let mut head = [0u8; 2];
+    std::fs::File::open(&tmp)
+        .and_then(|mut x| x.read_exact(&mut head))
+        .map_err(|e| e.to_string())?;
+    if &head != b"MZ" {
+        let _ = std::fs::remove_file(&tmp);
+        return Err("下载到的不是可执行文件".into());
+    }
+
+    // Windows 不允许覆盖正在运行的 exe，但允许改名（运行中的进程不受影响）
+    let old = dir.join("jane_update.old");
+    let _ = std::fs::remove_file(&old);
+    std::fs::rename(&exe, &old).map_err(|e| format!("旧包让位失败：{}", e))?;
+    if let Err(e) = std::fs::rename(&tmp, &exe) {
+        let _ = std::fs::rename(&old, &exe); // 换不进去就滚回去，旧版照常能用
+        return Err(format!("替换失败：{}", e));
+    }
+
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        /* 用 raw_arg 原样传命令行：走普通 args() 时 std 会把整串加引号并转义内层引号，
+           cmd 解析 `start "" "路径"` 就会坏掉（表现为替换成功但新进程没起来）。
+           延时 2 秒是等本进程退出、放开单实例互斥量，否则新实例会被转给正在退出的旧实例。 */
+        let line = format!("/C timeout /t 2 /nobreak >nul & start \"\" \"{}\"", exe.display());
+        let _ = std::process::Command::new("cmd")
+            .raw_arg(line)
+            .creation_flags(0x0800_0000) // CREATE_NO_WINDOW：别闪一个黑框
+            .spawn();
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = std::process::Command::new(&exe).spawn();
+    }
+
+    app.exit(0);
+    Ok(())
+}
+
 /// 点关闭 = 隐藏到托盘（音乐继续放），真正退出走托盘菜单。
 #[tauri::command]
 fn close_window(app: AppHandle) {
@@ -1004,6 +1069,12 @@ fn show_main(app: &AppHandle) {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     start_stream_server();
+    /* 一键更新留下的旧包（13MB）：新进程起来了说明它已经不被占用，能删就删 */
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(d) = exe.parent() {
+            let _ = std::fs::remove_file(d.join("jane_update.old"));
+        }
+    }
     let builder = tauri::Builder::default();
     // 双开守卫：已有实例时唤起它的窗口然后退出（两个实例共用 WebView2 数据目录会互相干扰）。
     let builder = builder.plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
@@ -1026,13 +1097,17 @@ pub fn run() {
             let menu = Menu::with_items(app, &[&show, &sep, &big, &small, &mini, &sep, &pin, &quit])?;
 
             // 三个档位都是固定尺寸（前端 set_window_size 管），不再需要最小尺寸限制
+            // 窗口标题带上版本号（任务栏 / Alt+Tab 可见），版本从 Cargo.toml 自动取，
+            // 以后改版本号不用再回来改这里
+            let full_name = concat!("Jane Music ", env!("CARGO_PKG_VERSION"));
             if let Some(w) = app.get_webview_window("main") {
                 let _ = w.set_min_size(None::<tauri::Size>);
+                let _ = w.set_title(full_name);
             }
 
             TrayIconBuilder::with_id("jane-tray")
                 .icon(app.default_window_icon().expect("no default icon").clone())
-                .tooltip("Jane Music 4.0")
+                .tooltip(full_name)
                 .menu(&menu)
                 .show_menu_on_left_click(false)
                 .on_menu_event(|app, ev| match ev.id.as_ref() {
@@ -1074,6 +1149,7 @@ pub fn run() {
             log_line,
             minimize_window,
             drag_window,
+            update_app,
             close_window,
             toggle_pin,
             set_pin,

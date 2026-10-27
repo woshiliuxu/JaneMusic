@@ -1,13 +1,13 @@
 <template>
   <div class="titlebar" :class="{ thin }" @mousedown="onDrag">
     <h1 data-tauri-drag-region-exclude @click="$emit('settings')">Jane Music</h1>
-    <!-- 有新版本时在标题后跟一颗小 NEW，点它直达下载页 -->
+    <!-- 有新版本时在标题后跟一颗小 NEW，点它下载替换并自动重启 -->
     <button
       v-if="store.update"
       class="new-badge"
       data-tauri-drag-region-exclude
-      :title="`出了新版本 ${store.update.latest}，点这去下载`"
-      @click="openReleases"
+      :title="`出了新版本 ${store.update.latest}，点这自动更新`"
+      @click="applyUpdate"
     >NEW</button>
     <div class="tb-space"></div>
     <!-- 榜单入口唯一位置：标题栏右上角，紧挨窗口按钮组 -->
@@ -50,6 +50,7 @@ import ChartMenu from "./ChartMenu.vue";
 import { store } from "../lib/store.js";
 import { invoke } from "../lib/tauri.js";
 import { setMode } from "../lib/modes.js";
+import { applyUpdate } from "../lib/update.js";
 
 const props = defineProps({ thin: Boolean });
 defineEmits(["settings", "theme", "pin"]);
@@ -63,7 +64,6 @@ function toggleWin() {
 }
 function minimize() { invoke("minimize_window").catch(() => {}); }
 function hideWin() { invoke("close_window").catch(() => {}); }
-function openReleases() { invoke("open_url", { url: store.update.url }).catch(() => {}); }
 
 /* 整条标题栏按下即拖。小窗 380 宽被按钮挤满，data-tauri-drag-region 依赖的
    空白区几乎没有，拖不动 —— 改成统一 mousedown 走自定义命令。

@@ -25,3 +25,5 @@ tools/__pycache__/
 
 # 旧包备份
 *.exe.old
+# 备份文件（*.exe.old / *.dll.old 等改名备份）
+*.old

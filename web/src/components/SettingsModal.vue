@@ -57,8 +57,8 @@
           v-else
           class="upd"
           data-tauri-drag-region-exclude
-          :title="`点这去下载 ${store.update.latest}`"
-          @click="openReleases"
+          :title="`点这自动更新到 ${store.update.latest}`"
+          @click="applyUpdate"
         >NEW {{ store.update.latest }} →</button>
         <button class="lnk" data-tauri-drag-region-exclude @click="openRepo">GitHub</button>
       </div>
@@ -73,7 +73,7 @@ import { store, kv, kvSave, toast, closeModal } from "../lib/store.js";
 import { applyVol } from "../lib/volume.js";
 import { applyLyrSize } from "../lib/ui.js";
 import { APP_VERSION, REPO_URL } from "../lib/constants.js";
-import { checkUpdate } from "../lib/update.js";
+import { checkUpdate, applyUpdate } from "../lib/update.js";
 import { invoke } from "../lib/tauri.js";
 
 const emit = defineEmits(["close"]);
@@ -98,7 +98,6 @@ function toggleWheel(key) {
 }
 
 function openRepo() { invoke("open_url", { url: REPO_URL }).catch(() => {}); }
-function openReleases() { invoke("open_url", { url: store.update.url }).catch(() => {}); }
 async function manualCheck() {
   const has = await checkUpdate(true);
   if (has) toast("标题栏那颗 NEW 就是入口", "ok");

@@ -29,7 +29,13 @@ export async function checkUpdate(manual = false) {
     const j = await r.json();
     const latest = j.tag_name || "";
     if (latest && compareVer(APP_VERSION, latest) > 0) {
-      store.update = { latest, url: j.html_url || REPO_URL + "/releases/latest" };
+      /* 找 Release 里的 exe 资产：有就能走「下载替换重启」的一键更新，没有只能开下载页 */
+      const exeAsset = (j.assets || []).find((a) => /\.exe$/i.test(a.name || ""));
+      store.update = {
+        latest,
+        url: j.html_url || REPO_URL + "/releases/latest",
+        exe: exeAsset ? exeAsset.browser_download_url : "",
+      };
       if (!manual) toast(`出了新版本 ${latest}，标题栏亮了颗 NEW，点它去拿`, "ok");
       return true;
     }
@@ -41,8 +47,30 @@ export async function checkUpdate(manual = false) {
   }
 }
 
-export function scheduleUpdateCheck() {
-  /* 错开启动时的榜单请求，8 秒后再探；探完按间隔补探 */
+/* 一键更新：下载新 exe → 替换 → 自动重启（全在 Rust 侧做，这里只管提示与兜底）。
+   成功时进程会被重启、走不到后面；任何失败都退回「打开下载页自己下」。 */
+export async function applyUpdate() {
+  const u = store.update;
+  if (!u || store.updating) return;
+  if (!u.exe) {
+    /* Release 里没挂 exe（或还是老 Release）：直接开下载页 */
+    invoke("open_url", { url: u.url }).catch(() => {});
+    return;
+  }
+  store.updating = true;
+  toast(`正在下载 ${u.latest}，好了会自动重启`, "ok");
+  try {
+    await invoke("update_app", { url: u.exe });
+    /* 正常情况下 Rust 已替换并退出进程，下面只是兜底 */
+    store.updating = false;
+  } catch (e) {
+    store.updating = false;
+    toast("自动更新没成，去下载页手动拿吧", "err");
+    invoke("open_url", { url: u.url }).catch(() => {});
+  }
+}
+
+export function scheduleUpdateCheck() {  /* 错开启动时的榜单请求，8 秒后再探；探完按间隔补探 */
   setTimeout(() => {
     checkUpdate(false);
     setInterval(() => checkUpdate(false), CHECK_INTERVAL);
