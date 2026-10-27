@@ -431,6 +431,15 @@ html.app-in .view.on { animation: appIn .13s ease; }
   font-weight: 600;
   font-size: calc(var(--lyr-size) + 2px);
 }
+/* 外语歌的翻译：另起一行，小一号、淡一点，和原文同一句（同一时间戳） */
+.lyr-line .lyr-sub {
+  display: block;
+  margin-top: 2px;
+  font-size: .84em;
+  font-weight: 400;
+  opacity: .72;
+  line-height: 1.42;
+}
 /* 只有一句歌词（纯音乐「请欣赏」等）：整句竖直居中，且不响应悬停/点击 */
 .lyr-list.single { display: flex; flex-direction: column; }
 .lyr-list.single .lyr-line { pointer-events: none; }

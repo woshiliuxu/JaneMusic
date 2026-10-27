@@ -982,6 +982,15 @@ fn close_window(app: AppHandle) {
     }
 }
 
+/// 托盘悬停气泡：正在放歌显示「歌名 - 歌手」，没在放就显示前端挑的一句趣味提示。
+/// 文案全由前端决定（换歌 / 暂停 / 定时轮换都会推一次），这里只管贴上去。
+#[tauri::command]
+fn set_tray_tip(app: AppHandle, text: String) {
+    if let Some(tray) = app.tray_by_id("jane-tray") {
+        let _ = tray.set_tooltip(Some(text));
+    }
+}
+
 /// 标题栏图钉：切换窗口置顶。返回置顶后的状态。
 #[tauri::command]
 fn toggle_pin(app: AppHandle) -> bool {
@@ -1151,6 +1160,7 @@ pub fn run() {
             drag_window,
             update_app,
             close_window,
+            set_tray_tip,
             toggle_pin,
             set_pin,
             get_pin,

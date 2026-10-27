@@ -12,7 +12,10 @@
         class="lyr-line"
         :class="{ cur: i === cur }"
         @click="seek(l)"
-      >{{ l.txt }}</div>
+      >
+        <span class="lyr-main">{{ l.txt }}</span>
+        <span v-if="l.sub" class="lyr-sub">{{ l.sub }}</span>
+      </div>
     </div>
   </div>
 </template>
