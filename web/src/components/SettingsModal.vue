@@ -57,9 +57,9 @@
           v-else
           class="upd"
           data-tauri-drag-region-exclude
-          :title="`点这自动更新到 ${store.update.latest}`"
+          :title="store.updating ? `正在下载 ${store.updPct || 0}%，好了自动重启` : `点这自动更新到 ${store.update.latest}`"
           @click="applyUpdate"
-        >NEW {{ store.update.latest }} →</button>
+        >{{ store.updating ? `下载中 ${store.updPct || 0}%` : `NEW ${store.update.latest} →` }}</button>
         <button class="lnk" data-tauri-drag-region-exclude @click="openRepo">GitHub</button>
       </div>
     </div>

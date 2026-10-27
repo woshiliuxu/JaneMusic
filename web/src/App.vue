@@ -111,6 +111,8 @@ onMounted(async () => {
         }
       }
     });
+    /* 一键更新下载进度：NEW 徽标变百分比 */
+    await listen("jm-upd-progress", (e) => { store.updPct = +e.payload || 0; });
   } catch { /* 事件桥不可用就算了 */ }
   /* 启动稳了之后探一次新版本（模块内部自己错峰） */
   scheduleUpdateCheck();

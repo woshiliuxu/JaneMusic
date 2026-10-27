@@ -58,13 +58,16 @@ export async function applyUpdate() {
     return;
   }
   store.updating = true;
+  store.updPct = 0;
   toast(`正在下载 ${u.latest}，好了会自动重启`, "ok");
   try {
     await invoke("update_app", { url: u.exe });
     /* 正常情况下 Rust 已替换并退出进程，下面只是兜底 */
     store.updating = false;
+    store.updPct = 0;
   } catch (e) {
     store.updating = false;
+    store.updPct = 0;
     toast("自动更新没成，去下载页手动拿吧", "err");
     invoke("open_url", { url: u.url }).catch(() => {});
   }

@@ -937,9 +937,19 @@ fn drag_window(app: AppHandle) {
 /// 一键更新：把新 exe 下到程序同目录 → 校验 PE 头 → 运行中的旧 exe 改名让位 → 换上新包
 /// → 2 秒后由 cmd 拉起新实例（等本进程退出，避免被单实例守卫转给旧进程）→ 本进程退出。
 /// 任何一步失败都返回 Err，前端回退成「打开下载页手动下」。
+///
+/// 必须是 async 命令：Tauri 的同步命令跑在主线程上，十几 MB 的阻塞下载会把整个
+/// 界面卡成「未响应」——真机就是么挂的。所以这里只当调度员，重活全丢进
+/// spawn_blocking，下载进度还通过 jm-upd-progress 事件推给前端画百分比。
 #[tauri::command]
-fn update_app(app: AppHandle, url: String) -> Result<(), String> {
-    use std::io::Read;
+async fn update_app(app: AppHandle, url: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || do_update(&app, url))
+        .await
+        .map_err(|e| format!("更新线程挂了：{e}"))?
+}
+
+fn do_update(app: &AppHandle, url: String) -> Result<(), String> {
+    use std::io::{Read, Write};
 
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
     let dir = exe.parent().ok_or("程序路径异常")?.to_path_buf();
@@ -951,13 +961,54 @@ fn update_app(app: AppHandle, url: String) -> Result<(), String> {
         .timeout(None) // 十几 MB 的包，别用固定超时卡死
         .build()
         .map_err(|e| e.to_string())?;
-    let mut resp = client.get(&url).send().map_err(|e| e.to_string())?;
-    if !resp.status().is_success() {
-        return Err(format!("下载失败 HTTP {}", resp.status()));
+
+    /* 直连 GitHub 下载偶尔抽风，给两次机会 */
+    let mut resp = None;
+    for i in 0..2 {
+        match client.get(&url).send() {
+            Ok(r) if r.status().is_success() => {
+                resp = Some(r);
+                break;
+            }
+            Ok(r) => {
+                let code = r.status();
+                if i == 1 {
+                    return Err(format!("下载失败 HTTP {}", code));
+                }
+            }
+            Err(e) => {
+                if i == 1 {
+                    return Err(format!("连不上下载地址：{}", e));
+                }
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_secs(2));
     }
+    let mut resp = resp.ok_or("下载失败")?;
+
     let mut f = std::fs::File::create(&tmp).map_err(|e| e.to_string())?;
-    std::io::copy(&mut resp, &mut f).map_err(|e| e.to_string())?;
+    let total = resp.content_length().unwrap_or(0);
+    let mut buf = vec![0u8; 256 * 1024];
+    let mut got: u64 = 0;
+    let mut last_pct: u32 = 0;
+    loop {
+        let n = resp.read(&mut buf).map_err(|e| e.to_string())?;
+        if n == 0 {
+            break;
+        }
+        f.write_all(&buf[..n]).map_err(|e| e.to_string())?;
+        got += n as u64;
+        /* 进度推给前端（NEW 徽标变百分比），每变 1% 才发一条，别刷屏 */
+        if total > 0 {
+            let pct = ((got * 100) / total) as u32;
+            if pct != last_pct {
+                last_pct = pct;
+                let _ = app.emit("jm-upd-progress", pct);
+            }
+        }
+    }
     drop(f);
+    let _ = app.emit("jm-upd-progress", 100);
 
     // 校验确实是 Windows 可执行文件（MZ 头）：代理/网络出错时可能下到 HTML 错误页
     let mut head = [0u8; 2];

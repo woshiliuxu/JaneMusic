@@ -1,14 +1,14 @@
 <template>
   <div class="titlebar" :class="{ thin }" @mousedown="onDrag">
     <h1 data-tauri-drag-region-exclude @click="$emit('settings')">Jane Music</h1>
-    <!-- 有新版本时在标题后跟一颗小 NEW，点它下载替换并自动重启 -->
+    <!-- 有新版本时在标题后跟一颗小 NEW，点它下载替换并自动重启；下载中变百分比 -->
     <button
       v-if="store.update"
       class="new-badge"
       data-tauri-drag-region-exclude
-      :title="`出了新版本 ${store.update.latest}，点这自动更新`"
+      :title="store.updating ? `正在下载 ${store.updPct || 0}%，好了自动重启` : `出了新版本 ${store.update.latest}，点这自动更新`"
       @click="applyUpdate"
-    >NEW</button>
+    >{{ store.updating ? (store.updPct || 0) + "%" : "NEW" }}</button>
     <div class="tb-space"></div>
     <!-- 榜单入口唯一位置：标题栏右上角，紧挨窗口按钮组 -->
     <ChartMenu :variant="thin ? 'chip' : 'icon'" />
