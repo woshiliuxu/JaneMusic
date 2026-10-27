@@ -6,6 +6,9 @@
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
 
+/// 仓库地址（托盘菜单的 GitHub 项），与前端 constants.js 的 REPO_URL 保持一致
+const REPO_URL: &str = "https://github.com/woshiliuxu/JaneMusic";
+
 /// DWM：窗口圆角偏好 / 边框颜色（Windows 11）。迷你胶囊的圆角是 CSS 画的，
 /// 系统再裁一次窗口圆角的话，两者半径不一致，四角会露出窗边。
 #[cfg(windows)]
@@ -712,9 +715,11 @@ fn clean_cache() {
 #[tauri::command]
 async fn fetch_playlist(id: String) -> Result<Vec<Song>, String> {
     let client = http()?;
+    // qijieya 放第一：i-meto 2026-10-28 起超时无响应，放首位每次拉歌单
+    // 都要先吃满 12s 超时才轮到备用源（封面/歌词还因此全挂过一轮）
     let sources = [
-        format!("https://api.i-meto.com/meting/api?server=netease&type=playlist&id={id}"),
         format!("https://api.qijieya.cn/meting/?server=netease&type=playlist&id={id}"),
+        format!("https://api.i-meto.com/meting/api?server=netease&type=playlist&id={id}"),
     ];
     let mut last_err = String::from("no source");
     for src in &sources {
@@ -739,6 +744,26 @@ async fn fetch_playlist(id: String) -> Result<Vec<Song>, String> {
         last_err = "empty or invalid response".into();
     }
     Err(last_err)
+}
+
+/// i-meto 主源 2026-10-28 起超时无响应，但历史会话/歌单缓存里存的 pic/lrc
+/// 还是它的地址（音频当时已被 rewrite_audio_url 换到 qijieya，所以只坏封面歌词）。
+/// 从 URL 抠出 type 和网易歌曲 id，统一重写到 qijieya 镜像；非 i-meto 原样返回。
+fn fix_meting_url(u: &str) -> String {
+    if !u.contains("api.i-meto.com") {
+        return u.to_string();
+    }
+    let id = u.split(['?', '&']).find_map(|p| {
+        p.strip_prefix("id=").filter(|v| !v.is_empty() && v.bytes().all(|b| b.is_ascii_digit()))
+    });
+    let ty = u.split(['?', '&'])
+        .find_map(|p| p.strip_prefix("type=").filter(|v| matches!(*v, "url" | "pic" | "lrc")));
+    match (id, ty) {
+        (Some(id), Some(ty)) => {
+            format!("https://api.qijieya.cn/meting/?server=netease&type={ty}&id={id}")
+        }
+        _ => u.to_string(),
+    }
 }
 
 /// 把歌单里的音频地址重写到 qijieya 镜像（i-meto 的音频端点限流严重，
@@ -836,13 +861,13 @@ fn parse_meting(body: &str) -> Vec<Song> {
                 pic: v
                     .get("pic")
                     .and_then(|x| x.as_str())
-                    .unwrap_or("")
-                    .to_string(),
+                    .map(fix_meting_url)
+                    .unwrap_or_default(),
                 lrc: v
                     .get("lrc")
                     .and_then(|x| x.as_str())
-                    .unwrap_or("")
-                    .to_string(),
+                    .map(fix_meting_url)
+                    .unwrap_or_default(),
             })
         })
         .collect()
@@ -1097,13 +1122,30 @@ pub fn run() {
             };
 
             let show = MenuItem::with_id(app, "show", "把窗口叫出来", true, None::<&str>)?;
+            let next = MenuItem::with_id(app, "next", "下一曲", true, None::<&str>)?;
             let big = MenuItem::with_id(app, "mode-big", "大窗待着", true, None::<&str>)?;
             let small = MenuItem::with_id(app, "mode-small", "缩成小窗", true, None::<&str>)?;
             let mini = MenuItem::with_id(app, "mode-mini", "缩成小胶囊", true, None::<&str>)?;
             let sep = tauri::menu::PredefinedMenuItem::separator(app)?;
             let pin = MenuItem::with_id(app, "pin", "钉在最前面", true, None::<&str>)?;
+            /* 版本号只是一条展示，点不了（enabled=false 会显示成灰字） */
+            let ver = MenuItem::with_id(
+                app,
+                "ver",
+                concat!("当前版本 v", env!("CARGO_PKG_VERSION")),
+                false,
+                None::<&str>,
+            )?;
+            let check = MenuItem::with_id(app, "check-upd", "检查更新", true, None::<&str>)?;
+            let github = MenuItem::with_id(app, "github", "GitHub", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "退出 Jane Music", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&show, &sep, &big, &small, &mini, &sep, &pin, &quit])?;
+            let menu = Menu::with_items(
+                app,
+                &[
+                    &show, &sep, &next, &big, &small, &mini, &sep, &pin, &sep, &ver, &check,
+                    &github, &sep, &quit,
+                ],
+            )?;
 
             // 三个档位都是固定尺寸（前端 set_window_size 管），不再需要最小尺寸限制
             // 窗口标题带上版本号（任务栏 / Alt+Tab 可见），版本从 Cargo.toml 自动取，
@@ -1121,6 +1163,19 @@ pub fn run() {
                 .show_menu_on_left_click(false)
                 .on_menu_event(|app, ev| match ev.id.as_ref() {
                     "show" => show_main(app),
+                    /* 切歌/查更新都交给前端：播放逻辑和更新流程都在那边 */
+                    "next" => {
+                        if let Some(w) = app.get_webview_window("main") {
+                            let _ = w.emit("jm-tray", "next");
+                        }
+                    }
+                    "check-upd" => {
+                        show_main(app);
+                        if let Some(w) = app.get_webview_window("main") {
+                            let _ = w.emit("jm-tray", "check");
+                        }
+                    }
+                    "github" => open_url(REPO_URL.to_string()),
                     "mode-big" => request_mode(app, "big"),
                     "mode-small" => request_mode(app, "small"),
                     "mode-mini" => request_mode(app, "mini"),

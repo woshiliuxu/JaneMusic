@@ -27,7 +27,11 @@ let kvTimer = null;
 export function kvSave() {
   clearTimeout(kvTimer);
   kvTimer = setTimeout(() => {
-    invoke("save_state", { json: JSON.stringify(kv) }).catch(() => {});
+    /* __lrcFetching 是「这轮会话里词拉到一半」的瞬态标记：程序在拉词中途被
+       关掉/杀掉，它就以 true 落盘，下次启动 loadLrc 看到它直接返回，
+       歌词永远卡在「飞奔来的路上」。落盘前剥掉，只留数据不留状态。 */
+    const snapshot = JSON.stringify(kv, (k, v) => (k === "__lrcFetching" ? undefined : v));
+    invoke("save_state", { json: snapshot }).catch(() => {});
   }, 900);
 }
 

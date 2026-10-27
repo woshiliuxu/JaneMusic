@@ -10,6 +10,30 @@ import { cancelRamp, rampTo, applyVol } from "./volume.js";
 
 /* ---------------- 榜单 ---------------- */
 
+/* i-meto 主源 2026-10-28 起超时无响应：历史会话（state.json）和本地歌单缓存里
+   存的 pic/lrc 还是它的地址，直接用就是死链（封面/歌词全挂）。
+   从 URL 抠出 type + 网易歌曲 id 重写到 qijieya 镜像——音频在 Rust 侧早这么做
+   （rewrite_audio_url），这里补齐封面和歌词；Rust 解析出口也已同样处理，
+   这份是给「恢复会话」用的，那条路绕过 Rust 解析。 */
+function fixSource(u) {
+  if (!u || u.indexOf("api.i-meto.com") < 0) return u;
+  const id = (u.match(/[?&]id=(\d+)/) || [])[1];
+  const ty = (u.match(/[?&]type=(url|pic|lrc)/) || [])[1];
+  return id && ty ? "https://api.qijieya.cn/meting/?server=netease&type=" + ty + "&id=" + id : u;
+}
+function fixSong(s) {
+  if (s && typeof s === "object") {
+    s.url = fixSource(s.url);
+    s.alt = fixSource(s.alt);
+    s.pic = fixSource(s.pic);
+    s.lrc = fixSource(s.lrc);
+    /* 旧版 state.json 里可能存着拉词中途被杀留下的 __lrcFetching:true，
+       不清掉的话 loadLrc 直接返回，歌词永远停在加载态（落盘侧也已剥离） */
+    delete s.__lrcFetching;
+  }
+  return s;
+}
+
 export async function ensurePlaylist(catId, silent) {
   /* 上次失败会被写成空数组，这里要按长度判断，否则这个榜单再也拉不起来 */
   if (store.playlists[catId] && store.playlists[catId].length) return;
@@ -522,9 +546,10 @@ async function bootInner(say) {
   try {
     const o = JSON.parse(raw || "{}");
     if (o && typeof o === "object") {
-      if (o.last && o.last.url) { kv.last = o.last; store.lastSong = o.last; }
+      if (o.last && o.last.url) { kv.last = fixSong(o.last); store.lastSong = kv.last; }
       for (const [id, v] of Object.entries(o.playlists || {})) {
-        if (v && Array.isArray(v.songs) && Date.now() - v.ts < PL_TTL) kv.playlists[id] = v;
+        if (v && Array.isArray(v.songs) && Date.now() - v.ts < PL_TTL)
+          kv.playlists[id] = { ts: v.ts, songs: v.songs.map(fixSong) };
       }
       if (typeof o.vol === "number") {
         const v = Math.max(0, Math.min(100, Math.round(o.vol)));
@@ -552,11 +577,11 @@ async function bootInner(say) {
         localStorage.setItem("jm.lyrSize", String(store.lyrSize));
       }
       if (Array.isArray(o.hist)) {
-        kv.hist = o.hist.filter((h) => h && h.url && h.title).slice(0, MAX_HIST);
+        kv.hist = o.hist.filter((h) => h && h.url && h.title).slice(0, MAX_HIST).map(fixSong);
         store.hist = kv.hist.slice();
       }
       if (Array.isArray(o.favs)) {
-        kv.favs = o.favs.filter((f) => f && f.url && f.title).slice(0, 500);
+        kv.favs = o.favs.filter((f) => f && f.url && f.title).slice(0, 500).map(fixSong);
         store.favs = kv.favs.slice();
       }
       /* 窗口形态：上次停在哪个模式、胶囊是从哪个窗口进去的 */

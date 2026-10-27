@@ -59,12 +59,12 @@ import SongListModal from "./components/SongListModal.vue";
 import LyricModal from "./components/LyricModal.vue";
 import ToastHost from "./components/ToastHost.vue";
 import DebugPanel from "./components/DebugPanel.vue";
-import { store, kv, kvSave, closeModal } from "./lib/store.js";
-import { boot, playSong } from "./lib/player.js";
+import { store, kv, kvSave, closeModal, toast } from "./lib/store.js";
+import { boot, playSong, playNext } from "./lib/player.js";
 import { setMode } from "./lib/modes.js";
 import { invoke } from "./lib/tauri.js";
 import { SIZES } from "./lib/constants.js";
-import { scheduleUpdateCheck } from "./lib/update.js";
+import { scheduleUpdateCheck, checkUpdate, applyUpdate } from "./lib/update.js";
 import { initTrayTip } from "./lib/trayTip.js";
 
 const currentList = computed(() => store.playlists[store.catId] || []);
@@ -92,6 +92,25 @@ onMounted(async () => {
   /* 托盘菜单请求切模式 */
   try {
     await listen("jm-mode", (e) => setMode(String(e.payload || "")));
+  } catch { /* 事件桥不可用就算了 */ }
+  /* 托盘菜单的下一曲 / 检查更新：切歌纯前端，查更新结果用 toast 说一声 */
+  try {
+    await listen("jm-tray", async (e) => {
+      const act = String(e.payload || "");
+      if (act === "next") playNext();
+      else if (act === "check") {
+        const has = await checkUpdate(true);
+        if (has && store.update) {
+          if (store.update.exe) {
+            toast(`出了新版本 ${store.update.latest}，正在自动下载`, "ok");
+            applyUpdate();
+          } else {
+            /* Release 上没挂 exe：退回下载页 */
+            invoke("open_url", { url: store.update.url }).catch(() => {});
+          }
+        }
+      }
+    });
   } catch { /* 事件桥不可用就算了 */ }
   /* 启动稳了之后探一次新版本（模块内部自己错峰） */
   scheduleUpdateCheck();
