@@ -557,6 +557,14 @@ fn get_stream_port() -> u16 {
     *STREAM_PORT.get().unwrap_or(&0)
 }
 
+/* 用系统默认浏览器打开链接（GitHub 仓库 / 新版本下载页） */
+#[tauri::command]
+fn open_url(url: String) {
+    let _ = std::process::Command::new("cmd")
+        .args(["/c", "start", "", &url])
+        .spawn();
+}
+
 /* ---------------- 状态持久化 ----------------
    WebView2 的 localStorage 落盘延迟极长，强杀进程直接丢，
    「恢复上次在听的歌」不能靠它 —— 写 %APPDATA%\JaneMusic\state.json。 */
@@ -1050,6 +1058,7 @@ pub fn run() {
             fetch_text,
             check_url,
             get_stream_port,
+            open_url,
             load_state,
             save_state,
             prefetch,

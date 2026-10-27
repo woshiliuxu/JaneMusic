@@ -64,6 +64,7 @@ import { boot, playSong } from "./lib/player.js";
 import { setMode } from "./lib/modes.js";
 import { invoke } from "./lib/tauri.js";
 import { SIZES } from "./lib/constants.js";
+import { scheduleUpdateCheck } from "./lib/update.js";
 
 const currentList = computed(() => store.playlists[store.catId] || []);
 
@@ -91,6 +92,8 @@ onMounted(async () => {
   try {
     await listen("jm-mode", (e) => setMode(String(e.payload || "")));
   } catch { /* 事件桥不可用就算了 */ }
+  /* 启动稳了之后探一次新版本（模块内部自己错峰） */
+  scheduleUpdateCheck();
 });
 
 /* html[data-mode] 驱动全局 CSS（背景透明/胶囊显隐/展开淡入） */
