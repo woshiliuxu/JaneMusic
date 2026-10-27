@@ -1,0 +1,24 @@
+# Rust / Tauri
+src-tauri/target/
+src-tauri/gen/schemas/
+
+# Node
+web/node_modules/
+web/dist/
+
+# 本机构建配置（镜像源等，按机器自行配置）
+/.cargo/
+
+# 旧版 3.0 原生前端（已被 web/ 取代，留档本地）
+/ui/
+
+# 发布产物（走 GitHub Releases 分发）
+发布/*.exe
+发布/*.dll
+*.zip
+
+# 本地调试产物
+*.log
+app_data/
+_edge_tmp*/
+tools/__pycache__/

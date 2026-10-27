@@ -1,0 +1,133 @@
+# -*- coding: utf-8 -*-
+"""把构建产物整理成可直接发给别人的发布包。
+
+产物：
+  发布/Jane Music 4.0.exe
+  发布/WebView2Loader.dll
+  JaneMusic.zip          ← 发这个
+
+为什么要带 dll：windows-gnu 工具链下 exe 的导入表里写死了
+WebView2Loader.dll，单独拿 exe 到别的目录会直接报
+「找不到 WebView2Loader.dll」。发布包必须两个文件一起。
+
+用法：python tools/publish.py
+"""
+import shutil
+import zipfile
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+RELEASE = ROOT / "src-tauri" / "target" / "release"
+OUT = ROOT / "发布"
+NAME = "Jane Music 4.0"
+
+SRC_EXE = RELEASE / "jane-music.exe"
+SRC_DLL = RELEASE / "WebView2Loader.dll"
+
+
+def copy_replace(src: Path, dst: Path) -> None:
+    """复制文件；若目标正被运行中的程序占用，先改名再写。
+
+    Windows 不允许覆盖正在运行的 exe，但允许给它改名，
+    这样用户一边听歌一边重新打包也不会失败。
+    """
+    try:
+        shutil.copy2(src, dst)
+        return
+    except PermissionError:
+        pass
+    old = dst.parent / (dst.name + ".old")
+    if old.exists():
+        try:
+            old.unlink()
+        except OSError:
+            pass
+    dst.rename(old)
+    shutil.copy2(src, dst)
+    try:
+        old.unlink()
+    except OSError:
+        pass
+
+README = """Jane Music 4.0
+
+【本版更新】界面整体重写（Vue）后又做了一轮打磨：大窗加宽到 860、封面换成旋转黑胶、
+歌词字号可调、榜单切换统一收到右上角、全套提示文案重写。详见同目录「更新说明.md」。
+
+【怎么用】
+1. 把整个文件夹解压出来，别只拿 exe —— 旁边的 WebView2Loader.dll 必须和它待在同一个文件夹里。
+2. 双击「Jane Music 4.0.exe」。默认是大窗（左封面右歌词），点标题栏右上角第一个圆图标切小窗。
+3. 点播放会先续上上次听的那首（秒开），点下一首随机抽歌，播完自动连播。
+
+【三种形态】
+- 大窗 860×600：左边旋转黑胶封面，右边整列歌词，当前唱的那句停在中间偏上一行，
+  点任意一句歌词跳到那句
+- 小窗 380×600：竖版布局，点封面看完整歌词弹层
+- 胶囊 340×84：托盘图标右键 → 胶囊模式；歌名、歌手、当前歌词都在，
+  能拖到屏幕任意位置，点展开按钮回到之前的窗口
+三种形态都在标题栏第一个圆图标/托盘菜单切换，下次打开回到上次所在的形态。
+（黑胶只在窗口被选中时转，切到别的窗口就停在原角度——省电省风扇。）
+
+【操作】
+- 榜单：标题栏右上角的胶囊（大窗显示榜单名，小窗是个圆钮），点开换榜，
+  成功/失败都会在底部弹一句提示。
+- 鼠标停在封面上滚轮 = 上下切歌；停在音量图标上滚轮 = 调音量（设置里可分别关掉）。
+- 音量：点小喇叭图标悬停弹出竖条，点/拖调节，点图标本身是静音。
+- 底部一排小图标：左侧心形收藏当前歌，右侧依次是收藏夹 / 播放历史 / 当前榜单全曲，
+  弹层里点歌名直接播放，也能一键清空。
+- 点左上角「Jane Music」进设置：音量滚轮、封面滚轮、歌词字号（12~24）与深浅色。
+- 空格 = 播放/暂停，N = 下一首。
+
+【说明】
+- 歌曲来自网易云公开接口，个别歌因下架或版权限制放不了，会自动跳下一首。
+- 需要联网。点关闭是隐藏到托盘，音乐继续放；托盘图标右键 → 退出 才真正退出。
+- 标题栏图钉可窗口置顶。历史、收藏弹层里点歌名可以再听，也可清空。
+- 右上角可切换浅色 / 深色主题。
+- 播放/暂停和调音量带淡入淡出，不会"啪"一下。
+- 听过的歌会缓存几天，下次启动不用重新等，直接秒开。
+
+【如果 Windows 拦截】
+第一次打开可能会提示「Windows 已保护你的电脑」。原因是个人开发的小工具没有购买数字签名证书，
+不是病毒。点「更多信息」→「仍要运行」就可以。
+
+如果仍然不放心，可以把 exe 传到 https://www.virustotal.com 查一下，多引擎扫一遍。
+"""
+
+
+def main() -> None:
+    if not SRC_EXE.exists():
+        raise SystemExit(f"找不到 {SRC_EXE}，先 cargo build --release --features tauri/custom-protocol")
+    OUT.mkdir(exist_ok=True)
+
+    exe_dst = OUT / f"{NAME}.exe"
+    copy_replace(SRC_EXE, exe_dst)
+    dll_dst = OUT / SRC_DLL.name
+    if SRC_DLL.exists():
+        try:
+            copy_replace(SRC_DLL, dll_dst)
+        except OSError:
+            pass
+
+    (OUT / "使用说明.txt").write_text(README, encoding="utf-8")
+
+    zip_path = ROOT / "JaneMusic.zip"
+    if zip_path.exists():
+        zip_path.unlink()
+    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as z:
+        z.write(exe_dst, f"{NAME}/{exe_dst.name}")
+        if dll_dst.exists():
+            z.write(dll_dst, f"{NAME}/{dll_dst.name}")
+        z.write(OUT / "使用说明.txt", f"{NAME}/使用说明.txt")
+        notes = OUT / "更新说明.md"
+        if notes.exists():
+            z.write(notes, f"{NAME}/更新说明.md")
+
+    print("发布完成:")
+    print(" ", exe_dst)
+    if dll_dst.exists():
+        print(" ", dll_dst)
+    print(" ", zip_path)
+
+
+if __name__ == "__main__":
+    main()

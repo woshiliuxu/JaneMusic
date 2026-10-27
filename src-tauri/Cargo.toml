@@ -1,0 +1,25 @@
+[package]
+name = "jane-music"
+version = "3.0.0"
+description = "Jane Music 2.0 - 随机听歌"
+edition = "2021"
+rust-version = "1.77"
+
+[lib]
+name = "jane_music_lib"
+crate-type = ["rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+reqwest = { version = "0.12", default-features = false, features = ["native-tls", "blocking"] }
+tauri-plugin-single-instance = "2"
+
+[profile.release]
+# 这台机器上 rustc + windows-gnu 在 LTO 阶段会崩（0xc0000005），不开 lto。
+opt-level = "s"
+strip = true
