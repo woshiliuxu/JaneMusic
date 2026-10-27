@@ -1,7 +1,7 @@
 <template>
-  <div class="titlebar" :class="{ thin }">
+  <div class="titlebar" :class="{ thin }" @mousedown="onDrag">
     <h1 data-tauri-drag-region-exclude @click="$emit('settings')">Jane Music</h1>
-    <!-- 有新版本时亮一颗 NEW，点它直达下载页 -->
+    <!-- 有新版本时在标题后跟一颗小 NEW，点它直达下载页 -->
     <button
       v-if="store.update"
       class="new-badge"
@@ -9,7 +9,7 @@
       :title="`出了新版本 ${store.update.latest}，点这去下载`"
       @click="openReleases"
     >NEW</button>
-    <div class="tb-space" data-tauri-drag-region></div>
+    <div class="tb-space"></div>
     <!-- 榜单入口唯一位置：标题栏右上角，紧挨窗口按钮组 -->
     <ChartMenu :variant="thin ? 'chip' : 'icon'" />
     <button
@@ -64,22 +64,33 @@ function toggleWin() {
 function minimize() { invoke("minimize_window").catch(() => {}); }
 function hideWin() { invoke("close_window").catch(() => {}); }
 function openReleases() { invoke("open_url", { url: store.update.url }).catch(() => {}); }
+
+/* 整条标题栏按下即拖。小窗 380 宽被按钮挤满，data-tauri-drag-region 依赖的
+   空白区几乎没有，拖不动 —— 改成统一 mousedown 走自定义命令。
+   排除：左键以外、按钮/NEW 徽标（各自有点击职责）、标题 h1（单击 = 打开设置，
+   拖动循环会吞掉 click 或 click 误触发在拖动结束后，都不干净）。 */
+function onDrag(e) {
+  if (e.button !== 0) return;
+  if (e.target.closest("button, .new-badge, h1")) return;
+  invoke("drag_window").catch(() => {});
+}
 </script>
 
 <style scoped>
-/* NEW 徽标：主色小胶囊，轻微呼吸提醒但不吵 */
+/* NEW 徽标：横着跟在标题后的小胶囊，比标题字小一号 */
 .new-badge {
   border: none; flex: none; cursor: pointer;
-  margin-left: 7px; padding: 2.5px 8px;
+  margin-left: 6px; padding: 1.5px 6.5px;
   border-radius: 999px;
-  font-size: 10px; font-weight: 700; letter-spacing: .8px;
+  font-size: 9.5px; font-weight: 700; letter-spacing: .8px;
+  line-height: 1.5;
   color: #fff; background: var(--accent);
   box-shadow: 0 2px 10px color-mix(in srgb, var(--accent) 45%, transparent);
   animation: new-pulse 2.2s ease-in-out infinite;
   transition: transform .15s;
 }
 .new-badge:hover { transform: scale(1.08); }
-.new-badge:active { transform: scale(.96); }
+.new-badge:active { transform: scale(.95); }
 @keyframes new-pulse {
   0%, 100% { opacity: 1; }
   50% { opacity: .72; }

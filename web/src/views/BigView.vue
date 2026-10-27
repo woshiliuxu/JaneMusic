@@ -109,7 +109,7 @@ watch(
   flex: 1; min-height: 0;
   display: flex;
   /* 视觉重心右移：封面是重色块、歌词文本短而疏，纯几何居中会显得整体偏左、右侧发空 */
-  padding-left: 40px;
+  padding-left: 48px;
 }
 .big-left {
   width: 340px; flex: none;
@@ -123,8 +123,8 @@ watch(
 .big-right {
   flex: 1; min-width: 0;
   display: flex; flex-direction: column;
-/* 右内距收 4px，给右移后的歌词区留回一点宽度；左内距加大，把歌词和唱片拉开距离 */
-  padding: 2px 26px 0 48px;
+/* 右内距 24 与标题栏/底栏同一右缘线；左内距加大，把歌词和唱片拉开距离 */
+  padding: 2px 24px 0 48px;
 }
 /* 歌名块：左缘与歌词文字左缘（列表内距 2 + 行内距 6）对齐 */
 .big-meta { padding-left: 8px; margin-bottom: 16px; }
@@ -147,7 +147,8 @@ watch(
 
 .big-foot {
   flex: 0 0 auto;
-  padding: 16px 30px 14px;
+  /* 左右各 24：与标题栏 logo / 窗口按钮同一对边线，两侧对称 */
+  padding: 16px 24px 14px 24px;
 }
 .big-ctrl {
   /* 三列 grid：中列（播放三键）锚定窗口正中，左右列贴边 */
@@ -169,5 +170,8 @@ watch(
 .big-ctrl > .g-right {
   justify-self: end;
   display: flex; align-items: center; gap: 12px;
+  /* 裸图标无可见边框，图标缩在 36px 命中区里距盒边 9px；
+     负外距把可见图形推到 846 线，与右时间数字、标题栏关闭钮圆圈同一条右缘线 */
+  margin-right: -9px;
 }
 </style>

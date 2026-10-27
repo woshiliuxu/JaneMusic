@@ -1,6 +1,6 @@
 [package]
 name = "jane-music"
-version = "4.0.1"
+version = "4.0.2"
 description = "Jane Music 2.0 - 随机听歌"
 edition = "2021"
 rust-version = "1.77"

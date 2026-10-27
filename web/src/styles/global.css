@@ -20,7 +20,7 @@
   --ok-soft: rgba(23, 138, 76, .12);
   --err: #d5344a;
   --err-soft: rgba(213, 52, 74, .10);
-  --lyr-hover: rgba(255, 255, 255, .5);
+  --lyr-hover: rgba(38, 43, 55, .055);
   --overlay: rgba(244, 245, 247, .42);
   --toast-bg: rgba(255, 255, 255, .82);
   --toast-ink: #22242b;
@@ -74,6 +74,10 @@ html, body, #app {
 #app { position: relative; }
 body { background: var(--background); }
 
+/* 控件字体接回页面栈：UA 给 button 的默认字体不继承，中英文行盒高度会不一致，
+   导致同一行里中文按钮和英文按钮的基线对不齐 */
+button, input, select, textarea { font-family: inherit; }
+
 /* 环境光：颜色来自当前封面主色 */
 body::before {
   content: "";
@@ -110,7 +114,8 @@ html.app-in .view.on { animation: appIn .13s ease; }
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 0 14px 0 18px;
+  /* 左右各 24：与大窗底栏、小窗主体共用同一条边线，两侧对称 */
+  padding: 0 24px;
   flex: 0 0 auto;
 }
 .titlebar h1 {
@@ -175,6 +180,9 @@ html.app-in .view.on { animation: appIn .13s ease; }
 /* ---------------- 进度条 ---------------- */
 .seek-row { display: flex; align-items: center; gap: 8px; }
 .time { color: var(--dim); flex: 0 0 36px; text-align: center; font-size: 11px; }
+/* 定宽格里的时间贴边对齐：左时间与歌名/logo 同一条左线，右时间与右侧图标同一条右线 */
+.seek-row .time:first-child { text-align: left; }
+.seek-row .time:last-child { text-align: right; }
 .seek {
   flex: 1; height: 18px;
   display: flex; align-items: center;
@@ -416,8 +424,8 @@ html.app-in .view.on { animation: appIn .13s ease; }
   transition: color .34s ease, background-color .34s ease;
   white-space: normal;
 }
-/* 悬停气泡：底色比纯白更淡、淡入淡出拉长，不再像一块硬白板 */
-.lyr-line:hover { background-color: var(--lyr-hover); color: var(--ink); }
+/* 悬停：不加底色块（浅色玻璃上任何色块都像补丁），只把文字点亮 */
+.lyr-line:hover { color: var(--ink); }
 .lyr-line.cur {
   color: var(--accent);
   font-weight: 600;

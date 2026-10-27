@@ -47,22 +47,21 @@
           <button class="sw" role="switch" :aria-checked="kv.wheelVol" @click="toggleWheel('wheelVol')"></button>
         </div>
       </div>
-    </div>
 
-    <!-- 关于：版本号 / 仓库地址 / 检查更新 -->
-    <div class="about">
-      <span class="ver">Jane Music v{{ APP_VERSION }}</span>
-      <span class="sep">·</span>
-      <button class="lnk" data-tauri-drag-region-exclude title="打开 GitHub 仓库" @click="openRepo">GitHub</button>
-      <span class="sep">·</span>
-      <button class="lnk" data-tauri-drag-region-exclude @click="manualCheck">检查更新</button>
-      <button
-        v-if="store.update"
-        class="upd"
-        data-tauri-drag-region-exclude
-        :title="`点这去下载 ${store.update.latest}`"
-        @click="openReleases"
-      >有新版本 {{ store.update.latest }} →</button>
+      <!-- 关于：版本号 / 检查更新 / 仓库地址（放进 .modal-b，内距与字段对齐） -->
+      <div class="about">
+        <span class="ver">v{{ APP_VERSION }}</span>
+        <span class="ab-gap"></span>
+        <button v-if="!store.update" class="lnk" data-tauri-drag-region-exclude @click="manualCheck">检查更新</button>
+        <button
+          v-else
+          class="upd"
+          data-tauri-drag-region-exclude
+          :title="`点这去下载 ${store.update.latest}`"
+          @click="openReleases"
+        >NEW {{ store.update.latest }} →</button>
+        <button class="lnk" data-tauri-drag-region-exclude @click="openRepo">GitHub</button>
+      </div>
     </div>
   </ModalShell>
 </template>
@@ -107,23 +106,25 @@ async function manualCheck() {
 </script>
 
 <style scoped>
+/* 关于行：与上方字段同行距，横内距交给 .modal-b，左右自然对齐 */
 .about {
-  display: flex; align-items: center; gap: 9px;
-  margin-top: 4px; padding-top: 14px;
+  display: flex; align-items: center; gap: 16px;
+  padding: 12px 0 7px;
   border-top: 1px solid var(--glass-border);
 }
-.about .ver { font-size: 12.5px; color: var(--dim); letter-spacing: .3px; }
-.about .sep { color: var(--dim); opacity: .5; font-size: 11px; }
+.ver { font-size: 12px; line-height: 17px; color: var(--dim); letter-spacing: .3px; }
+.ab-gap { flex: 1; }
 .lnk, .upd {
-  border: none; background: none; padding: 0; cursor: pointer;
-  font-size: 12.5px; letter-spacing: .3px;
-  color: var(--dim);
+  flex: none;
+  border: none; background: none; padding: 0;
+  cursor: pointer;
+  font-size: 12.5px; line-height: 17px; letter-spacing: .3px;
+  white-space: nowrap;
   transition: color .15s;
 }
+.lnk { color: var(--dim); }
 .lnk:hover { color: var(--accent); }
-.upd {
-  margin-left: auto;
-  color: var(--accent); font-weight: 600;
-}
+/* 有新版本时：主色文字按钮 */
+.upd { color: var(--accent); font-weight: 600; }
 .upd:hover { text-decoration: underline; }
 </style>

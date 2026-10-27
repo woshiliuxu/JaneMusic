@@ -22,3 +22,6 @@ web/dist/
 app_data/
 _edge_tmp*/
 tools/__pycache__/
+
+# 旧包备份
+*.exe.old

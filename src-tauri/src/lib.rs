@@ -900,6 +900,15 @@ fn minimize_window(app: AppHandle) {
     }
 }
 
+/// 标题栏任意处按下即拖动。小窗标题栏被窗口按钮挤满，Tauri 自带的
+/// data-tauri-drag-region 依赖的空白区几乎为 0，改由前端 mousedown 统一调这里。
+#[tauri::command]
+fn drag_window(app: AppHandle) {
+    if let Some(w) = app.get_webview_window("main") {
+        let _ = w.start_dragging();
+    }
+}
+
 /// 点关闭 = 隐藏到托盘（音乐继续放），真正退出走托盘菜单。
 #[tauri::command]
 fn close_window(app: AppHandle) {
@@ -1064,6 +1073,7 @@ pub fn run() {
             prefetch,
             log_line,
             minimize_window,
+            drag_window,
             close_window,
             toggle_pin,
             set_pin,

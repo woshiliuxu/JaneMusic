@@ -74,7 +74,8 @@ watch(
 .player {
   flex: 1; min-height: 0;
   display: flex; flex-direction: column;
-  padding: 2px 24px 16px;
+  /* 左右各 24：与标题栏 logo、窗口按钮的边线一致，两侧对称 */
+  padding: 2px 24px 16px 24px;
 }
 .cover-wrap {
   flex: 1; min-height: 0;
@@ -106,6 +107,10 @@ watch(
   padding: 8px 0 2px;
 }
 .side { flex: 1; display: flex; justify-content: flex-start; }
-.side.right { justify-content: flex-end; }
+.side.right {
+  justify-content: flex-end;
+  /* 同大窗：把音量图标的可见图形推到与右时间数字同一条右缘线（sm 按钮内缩 8px） */
+  margin-right: -8px;
+}
 .center-btns { display: flex; align-items: center; justify-content: center; }
 </style>
