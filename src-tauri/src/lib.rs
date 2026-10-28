@@ -1244,6 +1244,169 @@ fn do_update(app: &AppHandle, url: String) -> Result<(), String> {
     Ok(())
 }
 
+/* ---------------- 桌面快捷方式自愈 ----------------
+   每个版本的 exe 文件名都带版本号（Jane Music 4.0.9.exe），发版时旧文件被删，
+   桌面快捷方式指向的旧文件就没了——用户每次更新完都得重新「发送到桌面」。
+   这里每次启动都把桌面上的 Jane Music 快捷方式校正到「正在运行的 exe」：
+   名字、位置随它变，快捷方式跟着变；哪天被删了也会自动补回来。 */
+
+/// 桌面目录。优先 USERPROFILE\Desktop，再试 OneDrive 重定向过的桌面
+/// （开了 OneDrive 备份的机器上，USERPROFILE\Desktop 往往是个空壳）。
+#[cfg(windows)]
+fn desktop_dir() -> Option<std::path::PathBuf> {
+    let mut cands: Vec<std::path::PathBuf> = Vec::new();
+    if let Ok(u) = std::env::var("USERPROFILE") {
+        let home = std::path::Path::new(&u);
+        cands.push(home.join("Desktop"));
+        cands.push(home.join("OneDrive").join("Desktop"));
+    }
+    if let Ok(o) = std::env::var("OneDrive") {
+        cands.push(std::path::Path::new(&o).join("Desktop"));
+    }
+    cands.into_iter().find(|p| p.is_dir())
+}
+
+/// 这段字节里有没有某个路径的 UTF-16LE 形态。
+/// .lnk 把目标路径以宽字符存在文件里，直接搜字节比解析 Shell Link 格式省事得多。
+fn bytes_have_wide(bytes: &[u8], s: &str) -> bool {
+    let needle: Vec<u8> = s.encode_utf16().flat_map(|c| c.to_le_bytes()).collect();
+    if needle.is_empty() || bytes.len() < needle.len() {
+        return false;
+    }
+    bytes.windows(needle.len()).any(|w| w == needle.as_slice())
+}
+
+/// 这个 .lnk 是不是 Jane Music 的（按目标路径里的 "jane music" 认，
+/// 不看文件名——用户以前建的可能是「Jane Music 4.0.9.exe - 快捷方式.lnk」）。
+fn is_jane_link(bytes: &[u8]) -> bool {
+    let needle: Vec<u8> = "jane music".encode_utf16().flat_map(|c| c.to_le_bytes()).collect();
+    bytes.len() >= needle.len()
+        && bytes.windows(needle.len()).any(|w| w.eq_ignore_ascii_case(&needle))
+}
+
+/// PowerShell 单引号字面量：路径里的 ' 要写两遍
+fn ps_quote(p: &std::path::Path) -> String {
+    p.display().to_string().replace('\'', "''")
+}
+
+/// 不用第三方 crate 的 base64（只为了把脚本安全地塞进 -EncodedCommand：
+/// 走命令行参数拼字符串的话，路径里的中文/引号/空格会把 PowerShell 解析坏）
+fn b64(bytes: &[u8]) -> String {
+    const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for c in bytes.chunks(3) {
+        let n = ((c[0] as u32) << 16)
+            | ((*c.get(1).unwrap_or(&0) as u32) << 8)
+            | *c.get(2).unwrap_or(&0) as u32;
+        out.push(T[(n >> 18) as usize & 63] as char);
+        out.push(T[(n >> 12) as usize & 63] as char);
+        out.push(if c.len() > 1 { T[(n >> 6) as usize & 63] as char } else { '=' });
+        out.push(if c.len() > 2 { T[n as usize & 63] as char } else { '=' });
+    }
+    out
+}
+
+/// 把 link 这个 .lnk 写成指向 exe 的快捷方式（没有就新建）。
+#[cfg(windows)]
+fn write_shortcut(link: &std::path::Path, exe: &std::path::Path) -> bool {
+    use std::os::windows::process::CommandExt;
+
+    let dir = exe.parent().unwrap_or(std::path::Path::new("."));
+    let script = format!(
+        "$ProgressPreference='SilentlyContinue';$ErrorActionPreference='Stop';\
+         $s=(New-Object -ComObject WScript.Shell).CreateShortcut('{}');\
+         $s.TargetPath='{}';$s.WorkingDirectory='{}';\
+         $s.IconLocation='{},0';$s.Description='Jane Music 随机听歌';$s.Save()",
+        ps_quote(link),
+        ps_quote(exe),
+        ps_quote(dir),
+        ps_quote(exe)
+    );
+    // -EncodedCommand 要 UTF-16LE 的 base64，免去一切转义问题
+    let enc: Vec<u8> = script.encode_utf16().flat_map(|c| c.to_le_bytes()).collect();
+    let r = std::process::Command::new("powershell")
+        .args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-WindowStyle",
+            "Hidden",
+            "-EncodedCommand",
+            &b64(&enc),
+        ])
+        .creation_flags(0x0800_0000) // CREATE_NO_WINDOW：别闪黑框
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+    eprintln!(
+        "[shortcut] write {} -> {} : {}",
+        link.display(),
+        exe.display(),
+        if r { "ok" } else { "FAILED" }
+    );
+    r
+}
+
+/// 校正桌面快捷方式（幂等，且只在需要时才起 PowerShell，正常启动零开销）。
+/// 返回 true 表示桌面上的快捷方式现在指向当前 exe。
+#[cfg(windows)]
+fn ensure_desktop_shortcut() -> bool {
+    let exe = match std::env::current_exe() {
+        Ok(p) => p,
+        Err(_) => return false,
+    };
+    let exe_s = exe.to_string_lossy().to_string();
+    let desk = match desktop_dir() {
+        Some(d) => d,
+        None => return false,
+    };
+
+    let mut ours: Vec<std::path::PathBuf> = Vec::new();
+    let mut stale: Vec<std::path::PathBuf> = Vec::new();
+    if let Ok(rd) = std::fs::read_dir(&desk) {
+        for e in rd.flatten() {
+            let p = e.path();
+            let is_lnk = p
+                .extension()
+                .map(|x| x.eq_ignore_ascii_case("lnk"))
+                .unwrap_or(false);
+            if !is_lnk {
+                continue;
+            }
+            let bytes = match std::fs::read(&p) {
+                Ok(b) => b,
+                Err(_) => continue,
+            };
+            if !is_jane_link(&bytes) {
+                continue;
+            }
+            ours.push(p.clone());
+            if !bytes_have_wide(&bytes, &exe_s) {
+                stale.push(p);
+            }
+        }
+    }
+
+    if !stale.is_empty() {
+        // 指向旧版本的：就地改写，保留用户原来的名字（不新增图标）
+        let mut all_ok = true;
+        for p in stale {
+            all_ok &= write_shortcut(&p, &exe);
+        }
+        return all_ok;
+    }
+    if !ours.is_empty() {
+        eprintln!(
+            "[shortcut] 已有 {} 个且都指向当前 exe（{}）",
+            ours.len(),
+            exe_s
+        );
+        return true; // 已经有了且指向当前版本
+    }
+    // 桌面上一个都没有（首次运行 / 被删了）：补一个固定名字的
+    eprintln!("[shortcut] 桌面没有，准备新建（desktop={}）", desk.display());
+    write_shortcut(&desk.join("Jane Music.lnk"), &exe)
+}
+
 /// 点关闭 = 隐藏到托盘（音乐继续放），真正退出走托盘菜单。
 #[tauri::command]
 fn close_window(app: AppHandle) {
@@ -1354,6 +1517,12 @@ pub fn run() {
             let _ = std::fs::remove_file(d.join("jane_update.old"));
         }
     }
+    /* 桌面快捷方式自愈：换版本后 exe 文件名叫法会变，快捷方式别跟着失效。
+       丢后台线程：正常情况只看一眼就返回，需要重写时才起一次 PowerShell。 */
+    #[cfg(windows)]
+    std::thread::spawn(|| {
+        ensure_desktop_shortcut();
+    });
     let builder = tauri::Builder::default();
     // 双开守卫：已有实例时唤起它的窗口然后退出（两个实例共用 WebView2 数据目录会互相干扰）。
     let builder = builder.plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
@@ -1382,13 +1551,14 @@ pub fn run() {
                 None::<&str>,
             )?;
             let check = MenuItem::with_id(app, "check-upd", "检查更新", true, None::<&str>)?;
+            let shortcut = MenuItem::with_id(app, "shortcut", "修复桌面快捷方式", true, None::<&str>)?;
             let github = MenuItem::with_id(app, "github", "GitHub", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "退出 Jane Music", true, None::<&str>)?;
             let menu = Menu::with_items(
                 app,
                 &[
                     &show, &sep, &next, &big, &small, &mini, &sep, &pin, &sep, &ver, &check,
-                    &github, &sep, &quit,
+                    &shortcut, &github, &sep, &quit,
                 ],
             )?;
 
@@ -1419,6 +1589,13 @@ pub fn run() {
                         if let Some(w) = app.get_webview_window("main") {
                             let _ = w.emit("jm-tray", "check");
                         }
+                    }
+                    /* 手动兜底：快捷方式被误删或指向别处时，菜单点一下就修回来 */
+                    "shortcut" => {
+                        #[cfg(windows)]
+                        std::thread::spawn(|| {
+                            ensure_desktop_shortcut();
+                        });
                     }
                     "github" => open_url(REPO_URL.to_string()),
                     "mode-big" => request_mode(app, "big"),
