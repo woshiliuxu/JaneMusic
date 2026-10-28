@@ -10,27 +10,19 @@ import { cancelRamp, rampTo, applyVol } from "./volume.js";
 
 /* ---------------- 榜单 ---------------- */
 
-/* 接口源跟随后端启动测速：qijieya / i-meto 两个源谁快用谁（lib.rs 的
-   src-probe）。历史会话（state.json）和本地歌单缓存里存的 pic/lrc/音频
-   还是旧源地址，按当前首选源重写——音频在 Rust 侧早这么做（rewrite_audio_url），
+/* 接口源跟随后端启动测速：多个 Meting 源谁快用谁（lib.rs 的 src-probe）。
+   历史会话（state.json）和本地歌单缓存里存的 pic/lrc/音频还是旧源地址，
+   按当前首选源基址重写——音频在 Rust 侧早这么做（rewrite_audio_url），
    这里补齐封面和歌词；这份是给「恢复会话」用的，那条路绕过 Rust 解析。 */
-let srcPref = 0; // 0=qijieya 1=i-meto，boot 时由后端告知
-function markSource(n) {
-  if (n === 0 || n === 1) srcPref = n;
-}
-function metingUrl(ty, id) {
-  return srcPref === 1
-    ? "https://api.i-meto.com/meting/api?server=netease&type=" + ty + "&id=" + id
-    : "https://api.qijieya.cn/meting/?server=netease&type=" + ty + "&id=" + id;
+let srcBase = "https://api.qijieya.cn/meting/"; // boot 时由后端告知首选源基址
+function markSource(b) {
+  if (typeof b === "string" && b) srcBase = b;
 }
 function fixSource(u) {
-  if (!u) return u;
-  const isIMeto = u.indexOf("api.i-meto.com") >= 0;
-  const isQijieya = u.indexOf("api.qijieya.cn") >= 0;
-  if ((!isIMeto && !isQijieya) || isIMeto === (srcPref === 1)) return u; // 非 Meting 或已是首选
+  if (!u || u.indexOf("meting") < 0 || u.indexOf(srcBase) === 0) return u; // 非 Meting 或已是首选源
   const id = (u.match(/[?&]id=(\d+)/) || [])[1];
   const ty = (u.match(/[?&]type=(url|pic|lrc)/) || [])[1];
-  return id && ty ? metingUrl(ty, id) : u;
+  return id && ty ? srcBase + "?server=netease&type=" + ty + "&id=" + id : u;
 }
 function fixSong(s) {
   if (s && typeof s === "object") {
@@ -549,7 +541,7 @@ async function bootInner(say) {
   const [port, raw, src] = await Promise.all([
     invoke("get_stream_port").catch(() => 0),
     invoke("load_state").catch(() => ""),
-    invoke("preferred_source").catch(() => 0),
+    invoke("preferred_source").catch(() => ""),
   ]);
   say("port=" + port + " state=" + (raw ? raw.length : 0) + " src=" + src);
   markSource(src);

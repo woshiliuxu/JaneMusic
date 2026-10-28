@@ -711,18 +711,31 @@ fn clean_cache() {
 }
 
 /* ---------------- 接口源测速 ----------------
-   两个 Meting 兼容源（qijieya / i-meto）。应用一打开就并发各探一次，
+   N 个 Meting 兼容源（见 SRC_BASES）。应用一打开就并发各探一次，
    谁先回完整响应就用谁；之后每 10 分钟后台复测，接口临场变卡自动切走。
-   歌单拉取顺序、封面/歌词/音频地址重写，全部跟首选源走。 */
+   歌单拉取顺序、封面/歌词/音频地址重写，全部跟首选源走。
+   加新源：往 SRC_BASES / SRC_NAMES 各加一项，measure 里的 join! 同步加一个。 */
 
 const SRC_QIJIEYA: usize = 0;
 const SRC_IMETO: usize = 1;
+const SRC_JHS: usize = 2;
+const SRC_INJAHOW: usize = 3;
 /// 首选源结论的有效期：过期后台复测（不阻塞当前拉歌单，先用旧结论）
 const SRC_TTL: u64 = 10 * 60 * 1000;
 /// 单源探测上限：挂着不动的源别拖太久（i-meto 挂掉那次就是一直不回话）
 const PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(2000);
 /// 探针：拉一首歌的歌词，响应小不吃带宽；id 随便挑一首冷门但确实有词的
 const PROBE_ID: &str = "186016";
+
+/// 源基址：接口地址统一按「基址 + ?server=netease&type={ty}&id={id}」拼。
+/// 注意 i-meto 的路径是 /meting/api（结尾不带斜杠），其余都是 /meting/ 或 /。
+const SRC_BASES: [&str; 4] = [
+    "https://api.qijieya.cn/meting/",
+    "https://api.i-meto.com/meting/api",
+    "https://meting.jinghuashang.cn/",
+    "https://api.injahow.cn/meting/",
+];
+const SRC_NAMES: [&str; 4] = ["qijieya", "i-meto", "jinghuashang", "injahow"];
 
 static SRC_PREF: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(SRC_QIJIEYA);
 static SRC_AT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -739,14 +752,14 @@ fn now_ms() -> u64 {
         .as_millis() as u64
 }
 
-/// 按源编号拼 Meting 接口地址（两个源的路径拼法不一样）。
-/// ty：playlist / url / pic / lrc。
+/// 按源编号拼 Meting 接口地址。ty：playlist / url / pic / lrc。
 fn meting_url(src: usize, ty: &str, id: &str) -> String {
-    if src == SRC_IMETO {
-        format!("https://api.i-meto.com/meting/api?server=netease&type={ty}&id={id}")
-    } else {
-        format!("https://api.qijieya.cn/meting/?server=netease&type={ty}&id={id}")
-    }
+    format!("{}?server=netease&type={ty}&id={id}", SRC_BASES[src])
+}
+
+/// 是不是任何一个已知源的地址
+fn is_meting_url(u: &str) -> bool {
+    u.contains("meting")
 }
 
 /// 探一个源：拉探针歌词，等正文到齐才计时（只到响应头会让"秒回空包"的源占便宜）。
@@ -767,26 +780,36 @@ async fn probe_one(src: usize) -> Option<u128> {
     Some(t0.elapsed().as_millis())
 }
 
-/// 并发探两个源，快的当选；一边挂了用另一边，两边都挂维持现状。
+/// 并发探所有源，探通的里面挑最快的当选；全挂了维持现状。
 async fn measure() {
-    let (a, b) = tokio::join!(probe_one(SRC_QIJIEYA), probe_one(SRC_IMETO));
-    let pref = match (a, b) {
-        (Some(x), Some(y)) => {
-            if y < x {
-                SRC_IMETO
-            } else {
-                SRC_QIJIEYA // 打平也算 qijieya，保持默认稳定
+    let (a, b, c, d) = tokio::join!(
+        probe_one(SRC_QIJIEYA),
+        probe_one(SRC_IMETO),
+        probe_one(SRC_JHS),
+        probe_one(SRC_INJAHOW)
+    );
+    let rs = [a, b, c, d];
+    /* 严格小于才换人：打平保留索引靠前的（默认 qijieya），结论别来回抖 */
+    let mut best: Option<(usize, u128)> = None;
+    for (i, r) in rs.iter().enumerate() {
+        if let Some(ms) = r {
+            if best.map_or(true, |(_, m)| *ms < m) {
+                best = Some((i, *ms));
             }
         }
-        (Some(_), None) => SRC_QIJIEYA,
-        (None, Some(_)) => SRC_IMETO,
-        (None, None) => src_pref(), // 都探不动：沿用旧结论（默认 qijieya）
-    };
+    }
+    let pref = best.map(|(i, _)| i).unwrap_or_else(src_pref);
     SRC_PREF.store(pref, std::sync::atomic::Ordering::Release);
     SRC_AT.store(now_ms(), std::sync::atomic::Ordering::Release);
     eprintln!(
-        "[src-probe] qijieya={:?} i-meto={:?} -> pref={pref}",
-        a, b
+        "[src-probe] {} -> pref={pref}({})",
+        SRC_NAMES
+            .iter()
+            .zip(rs.iter())
+            .map(|(n, r)| format!("{n}={r:?}"))
+            .collect::<Vec<_>>()
+            .join(" "),
+        SRC_NAMES[pref]
     );
 }
 
@@ -815,25 +838,26 @@ async fn ensure_probe() -> usize {
     src_pref()
 }
 
-/// 前端启动时问一句当前首选源（0=qijieya 1=i-meto），
-/// 缓存和 state.json 里存的旧源地址好跟着重写。只读静态值，不触发探测。
+/// 前端启动时问一句当前首选源的基址，缓存和 state.json 里存的旧源地址
+/// 好按「基址 + ?server=netease&type=..&id=..」跟着重写。
+/// 会等首测结果（setup 里已提前开探，通常毫秒级就绪）——不等的话前端拿到的是
+/// 默认值，恢复会话时那首歌的封面/歌词会继续指向旧源。
 #[tauri::command]
-fn preferred_source() -> usize {
-    src_pref()
+async fn preferred_source() -> String {
+    SRC_BASES[ensure_probe().await].to_string()
 }
 
-/// 拉一个歌单（网易歌单 id），按启动测速的结论排先后，依次尝试两个 Meting 兼容源。
+/// 拉一个歌单（网易歌单 id），按启动测速的结论排先后，依次尝试所有 Meting 兼容源。
 /// 拉到后并发预筛一遍死链（这个源的 404 率过半，不预筛前端要连环跳很多次）。
 #[tauri::command]
 async fn fetch_playlist(id: String) -> Result<Vec<Song>, String> {
     let client = http()?;
     // 开局第一拉会在这里等首测结果（setup 里已经提前开探，通常早量完了）
     let first = ensure_probe().await;
-    let second = if first == SRC_QIJIEYA { SRC_IMETO } else { SRC_QIJIEYA };
-    let sources = [
-        meting_url(first, "playlist", &id),
-        meting_url(second, "playlist", &id),
-    ];
+    /* 首选源排第一，其余按 SRC_BASES 原顺序兜底（sort_by_key 是稳定排序） */
+    let mut order: Vec<usize> = (0..SRC_BASES.len()).collect();
+    order.sort_by_key(|&i| if i == first { 0 } else { 1 });
+    let sources: Vec<String> = order.iter().map(|&i| meting_url(i, "playlist", &id)).collect();
     let mut last_err = String::from("no source");
     for src in &sources {
         let resp = client.get(src).send().await;
@@ -862,10 +886,7 @@ async fn fetch_playlist(id: String) -> Result<Vec<Song>, String> {
 /// 缓存/历史会话里存的 pic/lrc 地址可能来自任一源（源会随测速结果切换），
 /// 统一重写到当前首选源；已经是首选的或非 Meting 地址原样返回。
 fn fix_meting_url(u: &str) -> String {
-    let pref = src_pref();
-    let is_imeto = u.contains("api.i-meto.com");
-    let is_qijieya = u.contains("api.qijieya.cn");
-    if (!is_imeto && !is_qijieya) || is_imeto == (pref == SRC_IMETO) {
+    if !is_meting_url(u) || u.starts_with(SRC_BASES[src_pref()]) {
         return u.to_string();
     }
     let id = u.split(['?', '&']).find_map(|p| {
@@ -874,7 +895,7 @@ fn fix_meting_url(u: &str) -> String {
     let ty = u.split(['?', '&'])
         .find_map(|p| p.strip_prefix("type=").filter(|v| matches!(*v, "url" | "pic" | "lrc")));
     match (id, ty) {
-        (Some(id), Some(ty)) => meting_url(pref, ty, &id),
+        (Some(id), Some(ty)) => meting_url(src_pref(), ty, &id),
         _ => u.to_string(),
     }
 }
@@ -955,20 +976,24 @@ fn parse_meting(body: &str) -> Vec<Song> {
         Ok(v) => v,
         Err(_) => return Vec::new(),
     };
+    /* 字段名两套并存：i-meto 给 title/author，qijieya 和 jinghuashang/injahow
+       这类标准 Meting 实现给 name/artist。只认一套的话另一类源整个歌单会被滤空。 */
+    let pick = |v: &serde_json::Value, keys: [&str; 2]| -> String {
+        keys.iter()
+            .find_map(|k| v.get(*k).and_then(|x| x.as_str()))
+            .unwrap_or("")
+            .to_string()
+    };
     arr.into_iter()
         .filter_map(|v| {
-            let title = v.get("title")?.as_str()?.to_string();
+            let title = pick(&v, ["title", "name"]);
             let url = v.get("url")?.as_str()?.to_string();
-            if url.is_empty() {
+            if url.is_empty() || title.is_empty() {
                 return None;
             }
             Some(Song {
                 title,
-                author: v
-                    .get("author")
-                    .and_then(|x| x.as_str())
-                    .unwrap_or("")
-                    .to_string(),
+                author: pick(&v, ["author", "artist"]),
                 url,
                 alt: String::new(),
                 pic: v
