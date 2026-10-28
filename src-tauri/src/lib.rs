@@ -710,16 +710,129 @@ fn clean_cache() {
     }
 }
 
-/// 拉一个歌单（网易歌单 id），依次尝试两个 Meting 兼容源。
+/* ---------------- 接口源测速 ----------------
+   两个 Meting 兼容源（qijieya / i-meto）。应用一打开就并发各探一次，
+   谁先回完整响应就用谁；之后每 10 分钟后台复测，接口临场变卡自动切走。
+   歌单拉取顺序、封面/歌词/音频地址重写，全部跟首选源走。 */
+
+const SRC_QIJIEYA: usize = 0;
+const SRC_IMETO: usize = 1;
+/// 首选源结论的有效期：过期后台复测（不阻塞当前拉歌单，先用旧结论）
+const SRC_TTL: u64 = 10 * 60 * 1000;
+/// 单源探测上限：挂着不动的源别拖太久（i-meto 挂掉那次就是一直不回话）
+const PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(2000);
+/// 探针：拉一首歌的歌词，响应小不吃带宽；id 随便挑一首冷门但确实有词的
+const PROBE_ID: &str = "186016";
+
+static SRC_PREF: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(SRC_QIJIEYA);
+static SRC_AT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static PROBE_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+fn src_pref() -> usize {
+    SRC_PREF.load(std::sync::atomic::Ordering::Acquire)
+}
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
+}
+
+/// 按源编号拼 Meting 接口地址（两个源的路径拼法不一样）。
+/// ty：playlist / url / pic / lrc。
+fn meting_url(src: usize, ty: &str, id: &str) -> String {
+    if src == SRC_IMETO {
+        format!("https://api.i-meto.com/meting/api?server=netease&type={ty}&id={id}")
+    } else {
+        format!("https://api.qijieya.cn/meting/?server=netease&type={ty}&id={id}")
+    }
+}
+
+/// 探一个源：拉探针歌词，等正文到齐才计时（只到响应头会让"秒回空包"的源占便宜）。
+/// 失败 / 超时 / 非成功状态一律返回 None。
+async fn probe_one(src: usize) -> Option<u128> {
+    let client = reqwest::Client::builder()
+        .user_agent(CLIENT)
+        .timeout(PROBE_TIMEOUT)
+        .build()
+        .ok()?;
+    let t0 = std::time::Instant::now();
+    let resp = client.get(meting_url(src, "lrc", PROBE_ID)).send().await.ok()?;
+    let st = resp.status();
+    resp.text().await.ok()?;
+    if !st.is_success() {
+        return None;
+    }
+    Some(t0.elapsed().as_millis())
+}
+
+/// 并发探两个源，快的当选；一边挂了用另一边，两边都挂维持现状。
+async fn measure() {
+    let (a, b) = tokio::join!(probe_one(SRC_QIJIEYA), probe_one(SRC_IMETO));
+    let pref = match (a, b) {
+        (Some(x), Some(y)) => {
+            if y < x {
+                SRC_IMETO
+            } else {
+                SRC_QIJIEYA // 打平也算 qijieya，保持默认稳定
+            }
+        }
+        (Some(_), None) => SRC_QIJIEYA,
+        (None, Some(_)) => SRC_IMETO,
+        (None, None) => src_pref(), // 都探不动：沿用旧结论（默认 qijieya）
+    };
+    SRC_PREF.store(pref, std::sync::atomic::Ordering::Release);
+    SRC_AT.store(now_ms(), std::sync::atomic::Ordering::Release);
+    eprintln!(
+        "[src-probe] qijieya={:?} i-meto={:?} -> pref={pref}",
+        a, b
+    );
+}
+
+/// 确保手上有份没过期的测速结论。从没量过就同步等一次（开局第一拉前必须知道
+/// 谁快）；量过但过期就丢后台复测，当前请求用旧结论不阻塞。
+async fn ensure_probe() -> usize {
+    let at = SRC_AT.load(std::sync::atomic::Ordering::Acquire);
+    if at != 0 {
+        if now_ms().saturating_sub(at) < SRC_TTL {
+            return src_pref();
+        }
+        // 结论过期：拿到锁的那个去后台复测，其他请求照旧走
+        if let Ok(guard) = PROBE_LOCK.try_lock() {
+            measure().await;
+            drop(guard);
+        }
+        return src_pref();
+    }
+    // 首测：加锁防并发重复量；等锁回来先看别人是不是已经量完了
+    let guard = PROBE_LOCK.lock().await;
+    if SRC_AT.load(std::sync::atomic::Ordering::Acquire) != 0 {
+        return src_pref();
+    }
+    measure().await;
+    drop(guard);
+    src_pref()
+}
+
+/// 前端启动时问一句当前首选源（0=qijieya 1=i-meto），
+/// 缓存和 state.json 里存的旧源地址好跟着重写。只读静态值，不触发探测。
+#[tauri::command]
+fn preferred_source() -> usize {
+    src_pref()
+}
+
+/// 拉一个歌单（网易歌单 id），按启动测速的结论排先后，依次尝试两个 Meting 兼容源。
 /// 拉到后并发预筛一遍死链（这个源的 404 率过半，不预筛前端要连环跳很多次）。
 #[tauri::command]
 async fn fetch_playlist(id: String) -> Result<Vec<Song>, String> {
     let client = http()?;
-    // qijieya 放第一：i-meto 2026-10-28 起超时无响应，放首位每次拉歌单
-    // 都要先吃满 12s 超时才轮到备用源（封面/歌词还因此全挂过一轮）
+    // 开局第一拉会在这里等首测结果（setup 里已经提前开探，通常早量完了）
+    let first = ensure_probe().await;
+    let second = if first == SRC_QIJIEYA { SRC_IMETO } else { SRC_QIJIEYA };
     let sources = [
-        format!("https://api.qijieya.cn/meting/?server=netease&type=playlist&id={id}"),
-        format!("https://api.i-meto.com/meting/api?server=netease&type=playlist&id={id}"),
+        meting_url(first, "playlist", &id),
+        meting_url(second, "playlist", &id),
     ];
     let mut last_err = String::from("no source");
     for src in &sources {
@@ -746,11 +859,13 @@ async fn fetch_playlist(id: String) -> Result<Vec<Song>, String> {
     Err(last_err)
 }
 
-/// i-meto 主源 2026-10-28 起超时无响应，但历史会话/歌单缓存里存的 pic/lrc
-/// 还是它的地址（音频当时已被 rewrite_audio_url 换到 qijieya，所以只坏封面歌词）。
-/// 从 URL 抠出 type 和网易歌曲 id，统一重写到 qijieya 镜像；非 i-meto 原样返回。
+/// 缓存/历史会话里存的 pic/lrc 地址可能来自任一源（源会随测速结果切换），
+/// 统一重写到当前首选源；已经是首选的或非 Meting 地址原样返回。
 fn fix_meting_url(u: &str) -> String {
-    if !u.contains("api.i-meto.com") {
+    let pref = src_pref();
+    let is_imeto = u.contains("api.i-meto.com");
+    let is_qijieya = u.contains("api.qijieya.cn");
+    if (!is_imeto && !is_qijieya) || is_imeto == (pref == SRC_IMETO) {
         return u.to_string();
     }
     let id = u.split(['?', '&']).find_map(|p| {
@@ -759,21 +874,19 @@ fn fix_meting_url(u: &str) -> String {
     let ty = u.split(['?', '&'])
         .find_map(|p| p.strip_prefix("type=").filter(|v| matches!(*v, "url" | "pic" | "lrc")));
     match (id, ty) {
-        (Some(id), Some(ty)) => {
-            format!("https://api.qijieya.cn/meting/?server=netease&type={ty}&id={id}")
-        }
+        (Some(id), Some(ty)) => meting_url(pref, ty, &id),
         _ => u.to_string(),
     }
 }
 
-/// 把歌单里的音频地址重写到 qijieya 镜像（i-meto 的音频端点限流严重，
-/// 且把大量活歌误报 404；qijieya 直接 302 到网易 CDN，稳定得多）。
+/// 把歌单里的音频地址重写到当前首选源。qijieya 直接 302 到网易 CDN 最稳，
+/// 首选就是它时原样保留；换源后旧地址跟着切，原地址存进 alt 兜底。
 fn rewrite_audio_url(url: &str) -> String {
     let id = url
         .split(['?', '&'])
         .find_map(|p| p.strip_prefix("id=").filter(|v| !v.is_empty() && v.bytes().all(|b| b.is_ascii_digit())));
     match id {
-        Some(id) => format!("https://api.qijieya.cn/meting/?server=netease&type=url&id={id}"),
+        Some(id) => meting_url(src_pref(), "url", &id),
         None => url.to_string(),
     }
 }
@@ -1250,10 +1363,16 @@ pub fn run() {
                     }
                 })
                 .build(app)?;
+            // 开局就把两个接口源量一遍：跟 WebView 加载并行，前端第一拉歌单时
+            // 结论多半已经好了，不用再等
+            tauri::async_runtime::spawn(async {
+                ensure_probe().await;
+            });
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             fetch_playlist,
+            preferred_source,
             fetch_text,
             check_url,
             get_stream_port,

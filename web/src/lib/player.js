@@ -10,16 +10,27 @@ import { cancelRamp, rampTo, applyVol } from "./volume.js";
 
 /* ---------------- 榜单 ---------------- */
 
-/* i-meto 主源 2026-10-28 起超时无响应：历史会话（state.json）和本地歌单缓存里
-   存的 pic/lrc 还是它的地址，直接用就是死链（封面/歌词全挂）。
-   从 URL 抠出 type + 网易歌曲 id 重写到 qijieya 镜像——音频在 Rust 侧早这么做
-   （rewrite_audio_url），这里补齐封面和歌词；Rust 解析出口也已同样处理，
-   这份是给「恢复会话」用的，那条路绕过 Rust 解析。 */
+/* 接口源跟随后端启动测速：qijieya / i-meto 两个源谁快用谁（lib.rs 的
+   src-probe）。历史会话（state.json）和本地歌单缓存里存的 pic/lrc/音频
+   还是旧源地址，按当前首选源重写——音频在 Rust 侧早这么做（rewrite_audio_url），
+   这里补齐封面和歌词；这份是给「恢复会话」用的，那条路绕过 Rust 解析。 */
+let srcPref = 0; // 0=qijieya 1=i-meto，boot 时由后端告知
+function markSource(n) {
+  if (n === 0 || n === 1) srcPref = n;
+}
+function metingUrl(ty, id) {
+  return srcPref === 1
+    ? "https://api.i-meto.com/meting/api?server=netease&type=" + ty + "&id=" + id
+    : "https://api.qijieya.cn/meting/?server=netease&type=" + ty + "&id=" + id;
+}
 function fixSource(u) {
-  if (!u || u.indexOf("api.i-meto.com") < 0) return u;
+  if (!u) return u;
+  const isIMeto = u.indexOf("api.i-meto.com") >= 0;
+  const isQijieya = u.indexOf("api.qijieya.cn") >= 0;
+  if ((!isIMeto && !isQijieya) || isIMeto === (srcPref === 1)) return u; // 非 Meting 或已是首选
   const id = (u.match(/[?&]id=(\d+)/) || [])[1];
   const ty = (u.match(/[?&]type=(url|pic|lrc)/) || [])[1];
-  return id && ty ? "https://api.qijieya.cn/meting/?server=netease&type=" + ty + "&id=" + id : u;
+  return id && ty ? metingUrl(ty, id) : u;
 }
 function fixSong(s) {
   if (s && typeof s === "object") {
@@ -535,11 +546,13 @@ async function bootInner(say) {
     document.documentElement.style.setProperty("--lyr-base", store.lyrSize + "px");
   }
 
-  const [port, raw] = await Promise.all([
+  const [port, raw, src] = await Promise.all([
     invoke("get_stream_port").catch(() => 0),
     invoke("load_state").catch(() => ""),
+    invoke("preferred_source").catch(() => 0),
   ]);
-  say("port=" + port + " state=" + (raw ? raw.length : 0));
+  say("port=" + port + " state=" + (raw ? raw.length : 0) + " src=" + src);
+  markSource(src);
   setStreamPort(port);
   markPort(port);
 

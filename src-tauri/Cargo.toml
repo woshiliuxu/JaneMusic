@@ -17,6 +17,9 @@ tauri = { version = "2", features = ["tray-icon"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 reqwest = { version = "0.12", default-features = false, features = ["native-tls", "blocking"] }
+# 只用 join! + Mutex：接口源测速要并发探两个源、加锁防重复量。
+# tauri 内部本来就带 tokio，这里只是显式声明给自己用，不引入新的大依赖。
+tokio = { version = "1", features = ["sync", "macros"] }
 tauri-plugin-single-instance = "2"
 
 [profile.release]
