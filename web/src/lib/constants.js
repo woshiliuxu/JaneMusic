@@ -22,5 +22,5 @@ export const WHEEL_STEP = 60;
 export const WHEEL_COOL = 320;
 
 /* 版本与仓库（发版时与 src-tauri/tauri.conf.json 的 version 一起改） */
-export const APP_VERSION = "4.0.7";
+export const APP_VERSION = "4.0.8";
 export const REPO_URL = "https://github.com/woshiliuxu/JaneMusic";
