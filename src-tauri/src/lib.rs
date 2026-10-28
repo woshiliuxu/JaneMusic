@@ -736,13 +736,34 @@ const SRC_BASES: [&str; 4] = [
     "https://api.injahow.cn/meting/",
 ];
 const SRC_NAMES: [&str; 4] = ["qijieya", "i-meto", "jinghuashang", "injahow"];
+/// 封面尺寸：Meting 的 size 参数会透传到网易 CDN（默认 300y300，两个镜像只有 90y90 的糊图）
+const PIC_SIZE: u32 = 512;
 
 static SRC_PREF: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(SRC_QIJIEYA);
 static SRC_AT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// 探通掩码：bit i = 第 i 个源探针成功。初值乐观认为 qijieya 通，
+/// 免得测速还没跑完时媒体地址先指到不通的源上。
+static SRC_MASK: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(1);
 static PROBE_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 fn src_pref() -> usize {
     SRC_PREF.load(std::sync::atomic::Ordering::Acquire)
+}
+
+/// 媒体资源（音频/封面/歌词）固定用的源：qijieya。
+/// 实测只有它对 VIP 歌给完整音频（另外两个镜像只给 30 秒试听、481KB），
+/// 也只有它认 size 参数（能要到大图，另两个永远 90y90）。
+/// 它探不通才退到测速首选源（宁可试听/糊图，也别没得听）。
+fn media_src() -> usize {
+    if SRC_MASK.load(std::sync::atomic::Ordering::Acquire) & 1 != 0 {
+        SRC_QIJIEYA
+    } else {
+        src_pref()
+    }
+}
+
+fn media_base() -> &'static str {
+    SRC_BASES[media_src()]
 }
 
 fn now_ms() -> u64 {
@@ -754,7 +775,21 @@ fn now_ms() -> u64 {
 
 /// 按源编号拼 Meting 接口地址。ty：playlist / url / pic / lrc。
 fn meting_url(src: usize, ty: &str, id: &str) -> String {
-    format!("{}?server=netease&type={ty}&id={id}", SRC_BASES[src])
+    // 封面额外要清晰图；其他类型不带
+    let tail = if ty == "pic" {
+        format!("&size={PIC_SIZE}")
+    } else {
+        String::new()
+    };
+    format!("{}?server=netease&type={ty}&id={id}{tail}", SRC_BASES[src])
+}
+
+/// 从 Meting 地址里抠出网易 id（全是数字才算）
+fn url_id(u: &str) -> Option<&str> {
+    u.split(['?', '&']).find_map(|p| {
+        p.strip_prefix("id=")
+            .filter(|v| !v.is_empty() && v.bytes().all(|b| b.is_ascii_digit()))
+    })
 }
 
 /// 是不是任何一个已知源的地址
@@ -791,8 +826,10 @@ async fn measure() {
     let rs = [a, b, c, d];
     /* 严格小于才换人：打平保留索引靠前的（默认 qijieya），结论别来回抖 */
     let mut best: Option<(usize, u128)> = None;
+    let mut mask = 0usize;
     for (i, r) in rs.iter().enumerate() {
         if let Some(ms) = r {
+            mask |= 1 << i;
             if best.map_or(true, |(_, m)| *ms < m) {
                 best = Some((i, *ms));
             }
@@ -800,6 +837,7 @@ async fn measure() {
     }
     let pref = best.map(|(i, _)| i).unwrap_or_else(src_pref);
     SRC_PREF.store(pref, std::sync::atomic::Ordering::Release);
+    SRC_MASK.store(mask, std::sync::atomic::Ordering::Release);
     SRC_AT.store(now_ms(), std::sync::atomic::Ordering::Release);
     eprintln!(
         "[src-probe] {} -> pref={pref}({})",
@@ -847,6 +885,14 @@ async fn preferred_source() -> String {
     SRC_BASES[ensure_probe().await].to_string()
 }
 
+/// 前端问媒体源基址（音频/封面/歌词统一走它）。缓存里的旧地址按它重写，
+/// 顺带拿到「大图 + 完整音频」。同样等首测——要判断 qijieya 通不通。
+#[tauri::command]
+async fn media_source() -> String {
+    ensure_probe().await;
+    media_base().to_string()
+}
+
 /// 拉一个歌单（网易歌单 id），按启动测速的结论排先后，依次尝试所有 Meting 兼容源。
 /// 拉到后并发预筛一遍死链（这个源的 404 率过半，不预筛前端要连环跳很多次）。
 #[tauri::command]
@@ -886,28 +932,27 @@ async fn fetch_playlist(id: String) -> Result<Vec<Song>, String> {
 /// 缓存/历史会话里存的 pic/lrc 地址可能来自任一源（源会随测速结果切换），
 /// 统一重写到当前首选源；已经是首选的或非 Meting 地址原样返回。
 fn fix_meting_url(u: &str) -> String {
-    if !is_meting_url(u) || u.starts_with(SRC_BASES[src_pref()]) {
+    if !is_meting_url(u) {
         return u.to_string();
     }
-    let id = u.split(['?', '&']).find_map(|p| {
-        p.strip_prefix("id=").filter(|v| !v.is_empty() && v.bytes().all(|b| b.is_ascii_digit()))
-    });
+    let id = url_id(u);
     let ty = u.split(['?', '&'])
         .find_map(|p| p.strip_prefix("type=").filter(|v| matches!(*v, "url" | "pic" | "lrc")));
-    match (id, ty) {
-        (Some(id), Some(ty)) => meting_url(src_pref(), ty, &id),
-        _ => u.to_string(),
+    let (Some(id), Some(ty)) = (id, ty) else {
+        return u.to_string();
+    };
+    /* 已是媒体源：封面还得确认带了 size（旧缓存里是 90y90/300y300 的地址） */
+    if u.starts_with(media_base()) && (ty != "pic" || u.contains("size=")) {
+        return u.to_string();
     }
+    meting_url(media_src(), ty, id)
 }
 
-/// 把歌单里的音频地址重写到当前首选源。qijieya 直接 302 到网易 CDN 最稳，
-/// 首选就是它时原样保留；换源后旧地址跟着切，原地址存进 alt 兜底。
+/// 把歌单里的音频地址重写到媒体源（qijieya 对 VIP 歌给完整音频，
+/// 另两个镜像只给 30 秒试听）。原源地址另存 alt 兜底。
 fn rewrite_audio_url(url: &str) -> String {
-    let id = url
-        .split(['?', '&'])
-        .find_map(|p| p.strip_prefix("id=").filter(|v| !v.is_empty() && v.bytes().all(|b| b.is_ascii_digit())));
-    match id {
-        Some(id) => meting_url(src_pref(), "url", &id),
+    match url_id(url) {
+        Some(id) => meting_url(media_src(), "url", id),
         None => url.to_string(),
     }
 }
@@ -918,9 +963,20 @@ async fn prefilter_dead(songs: Vec<Song>) -> Vec<Song> {
     let songs: Vec<Song> = songs
         .into_iter()
         .map(|mut s| {
-            let orig = s.url.clone();
-            s.url = rewrite_audio_url(&orig);
-            s.alt = if s.url == orig { String::new() } else { orig };
+            let id = url_id(&s.url).map(|v| v.to_string());
+            s.url = rewrite_audio_url(&s.url);
+            /* 兜底地址用测速首选源：媒体源这首给不出音频时，stream 代理会拿它重试 */
+            s.alt = match id {
+                Some(id) => {
+                    let alt = meting_url(src_pref(), "url", &id);
+                    if alt == s.url {
+                        String::new()
+                    } else {
+                        alt
+                    }
+                }
+                None => String::new(),
+            };
             s
         })
         .collect();
@@ -1398,6 +1454,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             fetch_playlist,
             preferred_source,
+            media_source,
             fetch_text,
             check_url,
             get_stream_port,

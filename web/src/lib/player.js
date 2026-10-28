@@ -10,19 +10,27 @@ import { cancelRamp, rampTo, applyVol } from "./volume.js";
 
 /* ---------------- 榜单 ---------------- */
 
-/* 接口源跟随后端启动测速：多个 Meting 源谁快用谁（lib.rs 的 src-probe）。
-   历史会话（state.json）和本地歌单缓存里存的 pic/lrc/音频还是旧源地址，
-   按当前首选源基址重写——音频在 Rust 侧早这么做（rewrite_audio_url），
-   这里补齐封面和歌词；这份是给「恢复会话」用的，那条路绕过 Rust 解析。 */
-let srcBase = "https://api.qijieya.cn/meting/"; // boot 时由后端告知首选源基址
+/* 接口分两类源，各取所长：
+   - 歌单列表用「最快源」（后端启动测速，四选一）；
+   - 音频/封面/歌词用「媒体源」（后端固定 qijieya）——实测只有它对 VIP 歌给完整
+     音频（另两个镜像只给 30 秒试听），也只有它认 size 参数（能要到大图，另两个永远 90y90）。
+   历史会话（state.json）和本地歌单缓存里存的还是旧源地址，按媒体源基址重写。
+   音频在 Rust 侧早这么做（rewrite_audio_url），这里补齐封面和歌词；这份是给
+   「恢复会话」用的，那条路绕过 Rust 解析。 */
+let srcBase = "https://api.qijieya.cn/meting/"; // boot 时由后端告知媒体源基址
+const PIC_SIZE = 512;
 function markSource(b) {
   if (typeof b === "string" && b) srcBase = b;
 }
 function fixSource(u) {
-  if (!u || u.indexOf("meting") < 0 || u.indexOf(srcBase) === 0) return u; // 非 Meting 或已是首选源
+  if (!u || u.indexOf("meting") < 0) return u;
   const id = (u.match(/[?&]id=(\d+)/) || [])[1];
   const ty = (u.match(/[?&]type=(url|pic|lrc)/) || [])[1];
-  return id && ty ? srcBase + "?server=netease&type=" + ty + "&id=" + id : u;
+  if (!id || !ty) return u;
+  // 封面必须带 size（旧地址可能是 90y90 的糊图）
+  const ok = u.indexOf(srcBase) === 0 && (ty !== "pic" || u.indexOf("size=") > 0);
+  if (ok) return u;
+  return srcBase + "?server=netease&type=" + ty + "&id=" + id + (ty === "pic" ? "&size=" + PIC_SIZE : "");
 }
 function fixSong(s) {
   if (s && typeof s === "object") {
@@ -541,7 +549,7 @@ async function bootInner(say) {
   const [port, raw, src] = await Promise.all([
     invoke("get_stream_port").catch(() => 0),
     invoke("load_state").catch(() => ""),
-    invoke("preferred_source").catch(() => ""),
+    invoke("media_source").catch(() => ""),
   ]);
   say("port=" + port + " state=" + (raw ? raw.length : 0) + " src=" + src);
   markSource(src);
